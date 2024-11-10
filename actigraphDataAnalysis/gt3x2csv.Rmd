@@ -1,0 +1,72 @@
+---
+title: "GT3X to CSV"
+format:
+  html:
+    self-contained: true
+---
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE
+)
+```
+
+
+```{r}
+#| echo: true
+#| code-fold: false
+
+# WRK_PATH est le chemin vers le répertoire où se trouve notre projet et où se trouvent les fichiers mocap.
+# Vous devrez ajuster ce chemin en fonction de votre propre répertoire.
+WRK_PATH <- "C:/Users/germa/OneDrive/Documents/GitHub/ENS_2A_signal_actigraphDataAnalysis/actigraphDataAnalysis"
+
+# La fonction `setwd()` change le répertoire de travail pour celui que nous avons défini dans WRK_PATH.
+# Cela signifie que toute lecture/écriture de fichiers se fera à partir de ce répertoire.
+setwd(WRK_PATH)
+
+# On utilise la fonction `getwd()` pour afficher le répertoire de travail actuel et vérifier que le changement a bien eu lieu.
+cat("Répertoire de travail actuel :", getwd(), "\n")
+
+# Ensuite, nous définissons le chemin vers le dossier contenant les données de motion capture (C3D).
+# Ce dossier se trouve à l'intérieur de notre répertoire de travail.
+DAT_PATH <- file.path(WRK_PATH, "data")
+
+# On affiche également le chemin vers les données pour s'assurer qu'il est correct.
+cat("Répertoire des données :", DAT_PATH, "\n")
+```
+
+```{r}
+library(gt3x2csv)
+
+# Setting up the directory to convert files
+my_directory <- file.path(DAT_PATH, "TP2_APstandard") #"TP1_freeliving")
+
+# An example directory with some GT3X files
+list.files(my_directory)
+#> [1] "test_file1.gt3x" "test_file2.gt3x" "test_file3.gt3x" "test_file4.gt3x"
+#> [5] "test_file5.gt3x"
+gt3x_2_csv(
+  gt3x_files = my_directory,
+  outdir = NULL, # Save to the same place
+  progress = TRUE, # Show a progress bar?
+  parallel = TRUE # Process files in parallel?
+)
+
+# Directory now has the new files.
+list.files(my_directory)
+#>  [1] "test_file1.gt3x"   "test_file1RAW.csv" "test_file2.gt3x"  
+#>  [4] "test_file2RAW.csv" "test_file3.gt3x"   "test_file3RAW.csv"
+#>  [7] "test_file4.gt3x"   "test_file4RAW.csv" "test_file5.gt3x"  
+#> [10] "test_file5RAW.csv"
+```
+
+Test read gt3x to see timestamp
+
+```{r}
+#library(read.gt3x)
+
+#thisFileShortPath <- list.files(DAT_PATH, "*.gt3x")[1]
+#thisFilePath <-  file.path(DAT_PATH, thisFileShortPath)
+
+#df <- read.gt3x(thisFilePath)
+```

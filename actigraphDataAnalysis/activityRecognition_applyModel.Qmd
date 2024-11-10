@@ -1,0 +1,224 @@
+---
+title: "Activity Recognition"
+format:
+    html:
+        code-fold: false
+        self-contained: true
+jupyter: python3
+---
+
+## Chargement des packages nécessaires au traitement des données
+Un package (ou librairie) est un ensemble de fonctions permettant d'exécuter des instructions
+On utilise le mot clé `import` pour charger en mémoire un package en début de session de travail. 
+Certains packages sont composés de plusieurs sous packages. Par exemple, le package Pyomeca est composé de différents packages, qui sont plus ou moins nécessaires en fonction du traitement visé. Ici, nous ne nous servirons que du sous package `Markers` pour le traitement de trajectoires de marqueurs. Pour ne sélectionner qu'un sous-package, on peut utiliser le mot clé `from` pour spécifier dans quel package on souhaite extraire un sous package.
+
+*N.B:* le mot clé `as` permet simplement de le renommer dans la session de travail.   
+    - **Numpy** : Manipulation/calculs sur vecteurs/matrices (https://numpy.org/)  
+    - **Pyomeca** : Lecture/Ecriture/traitement de données bioméca (comme fichier C3D) (https://pyomeca.github.io/ et https://pyomeca.github.io/api/markers/)  
+    - **Matplotlib** : Génération d'illustrations pour interprétation graphique des signaux  
+
+Il existe aussi d'autres package intéressants pour aller plus loin, mais nous ne nous en serviront pas dans ce tutoriel:  
+    - **Pandas** : Pour manipuler des DataFrame, un outil pratique pour gérer des tables de données  
+    - **Seaborn** : Pour améliorer facilement l'apparence des graphiques  
+
+```{python}
+# %% Initialisation
+
+# Nous commençons par importer les bibliothèques nécessaires pour travailler avec les données de motion capture (mocap).
+# Ces bibliothèques nous permettront de gérer les fichiers, manipuler les données et visualiser les résultats.
+
+import pandas as pd # Pour manipuler des dataframe
+import numpy as np  # Pour manipuler des tableaux et des données numériques, utile dans beaucoup de calculs
+from pyomeca import Markers  # Pyomeca est une bibliothèque dédiée à l'analyse de données biomécaniques. 
+# Ici, nous n'importons que la classe Markers, qui gère spécifiquement les trajectoires de marqueurs mocap.
+import matplotlib.pyplot as plt  # Pour créer des graphiques
+import seaborn as sns # Graphiques améliorés (type ggplot de R)
+from sklearn.preprocessing import LabelEncoder # Pour le machine learning (encoder les labels)
+from sklearn.preprocessing import StandardScaler # Pour le machine learning (normalisation des features)
+from sklearn.model_selection import train_test_split # Pour le machine learning (diviser les data en learning et test)
+from sklearn.model_selection import GroupKFold # Pour le machine learning (diviser les data en learning et test avec 5 groupes)
+from sklearn.ensemble import RandomForestClassifier # Pour le machine learning (modèle random forest)
+from sklearn.svm import SVC # Pour le machine learning (modèle SVM)
+from sklearn.neighbors import KNeighborsClassifier # Pour le machine learning (modèle k-NN)
+from sklearn.neural_network import MLPClassifier # Pour le machine learning (modèle Réseau de Neurones)
+from sklearn.metrics import accuracy_score, confusion_matrix, classification_report # Pour le machine learning (calculer les métriques de performance)
+from sklearn.model_selection import cross_val_score # Pour le machine learning (validation croisée)
+from sklearn.model_selection import GridSearchCV # Pour le machine learning (hyperparametres)
+from scipy.stats import friedmanchisquare # Statistiques: test de friedman
+from sklearn.ensemble import StackingClassifier # Pour le machine learning (ensemble learning)
+from imblearn.over_sampling import SMOTE # Pour le machine learning (équilibrage des classes majo/minoritaires)
+from tqdm import tqdm # Pour afficher barre de chargement / progression en %
+from sklearn.feature_selection import SelectKBest, f_classif # Pour le machine learning (Sélection de Caractéristiques)
+import joblib # Pour enregistrer les modeles de machine learning
+
+# Nous importons également le module 'os', qui permet de manipuler les fichiers et les répertoires sur notre système.
+import os
+```
+
+## Définir le répertoire de travail
+
+Python utilise un "répertoire de travail" qui est le dossier dans lequel Python va chercher et enregistrer des fichiers.
+Il est important de le définir correctement pour éviter les erreurs liées aux chemins de fichiers.
+
+```{python}
+# WRK_PATH est le chemin vers le répertoire où se trouve notre projet et où se trouvent les fichiers mocap.
+# Vous devrez ajuster ce chemin en fonction de votre propre répertoire.
+WRK_PATH = r"C:\Users\germa\OneDrive\Documents\GitHub\ENS_2A_signal_actigraphDataAnalysis\actigraphDataAnalysis"
+
+# La fonction `os.chdir()` change le répertoire de travail pour celui que nous avons défini dans WRK_PATH.
+# Cela signifie que toute lecture/écriture de fichiers se fera à partir de ce répertoire.
+os.chdir(WRK_PATH)
+
+# On utilise la fonction `os.getcwd()` pour afficher le répertoire de travail actuel et vérifier que le changement a bien eu lieu.
+print("Répertoire de travail actuel :", os.getcwd())
+
+# Ensuite, nous définissons le chemin vers le dossier contenant les données de motion capture (C3D).
+# Ce dossier se trouve à l'intérieur de notre répertoire de travail.
+windowSize = 5 #30 #5 #size in seconds = 5 or 30 (5s should be default)
+windowSizeStr = f"windowSize_{windowSize}s"
+DAT_PATH = os.path.join(WRK_PATH, "data")
+RES_PATH = os.path.join(WRK_PATH, "RES", "TP1_freeliving", windowSizeStr)
+Class_PATH = os.path.join(WRK_PATH, "RES", "TP2_APstandard", "windowSize_5s", "ClassifierIA") #classifier is trained on 5s
+
+# Créer le dossier (et les sous-dossiers nécessaires) s'il n'existe pas déjà
+OUT_PATH = os.path.join(RES_PATH, "activityPredictions")
+os.makedirs(OUT_PATH, exist_ok=True)
+
+# On affiche également le chemin vers les données pour s'assurer qu'il est correct.
+print(f"Répertoire des données : {RES_PATH}")
+```
+
+# Importer le modèle entraîné
+
+```{python}
+# Choisir le modele a utiliser
+# bests are stacking or NeuronNetwork
+modelToUse = "NeuronNetwork" #"stacking" #"NeuronNetwork" #"k-NN" #"SVM" #"randomForest"
+
+# Charger les meilleurs modèles optimisé pour chaque type
+if modelToUse == "stacking":
+    nameModel = "stacking_model.pkl"
+elif modelToUse == "NeuronNetwork":
+    nameModel = "best_NeuronNetwork_model.pkl"
+elif modelToUse == "k-NN":
+    nameModel = "best_k-NN_model.pkl"
+elif modelToUse == "SVM":
+    nameModel = "best_SVM_model.pkl"
+elif modelToUse == "randomForest":
+    nameModel = "best_randomForest_model.pkl"
+
+# Charger le modèle choisi
+model = joblib.load(os.path.join(Class_PATH, nameModel))
+
+# Charger le scaler
+scaler = joblib.load(os.path.join(Class_PATH, "scaler.pkl"))
+
+# Charger l'encodeur de labels
+le = joblib.load(os.path.join(Class_PATH, "label_encoder.pkl"))
+
+print("Modèle et objets chargés avec succès.")
+```
+
+
+# Appliquer le Modèle aux Données de 7 Jours pour la Reconnaissance d'Activité
+
+```{python}
+# Lister tous les fichiers qui se terminent par "_standardized_activity_features.csv" dans RES_PATH
+csv_files = [f for f in os.listdir(RES_PATH) if f.endswith("_standardized_activity_features.csv")]
+
+# Nombre total de fichiers à traiter
+total_files = len(csv_files)
+print(f"Nombre total de fichiers à traiter : {total_files}\n")
+
+# Boucler sur chaque fichier
+for index, file_name_with_extension in enumerate(csv_files, start=1):
+    print(f"Traitement du fichier {index}/{total_files}: {file_name_with_extension}")
+
+    # Charger les données
+    stdActivityFeatures_PATH = os.path.join(RES_PATH, file_name_with_extension)
+    data = pd.read_csv(stdActivityFeatures_PATH)
+    print("  - Données chargées avec succès.")
+
+    # Exclure certaines données
+    cols2exclude = ['window_id', 'start_time', 'end_time']
+    data_cols2exclude = data[cols2exclude]
+    data = data.drop(cols2exclude, axis=1)
+    #print("  - Colonnes non nécessaires exclues.")
+
+    # Normaliser les nouvelles données
+    new_data_scaled = scaler.transform(data)
+    #print("  - Données normalisées.")
+
+    # Faire des prédictions avec les probabilités
+    probabilities = model.predict_proba(new_data_scaled)
+    max_probabilities = np.max(probabilities, axis=1)  # Probabilité maximale pour chaque prédiction
+    # Définir un seuil de certitude, par exemple 0.6 (ajustez ce seuil selon vos besoins)
+    threshold = 0.9
+
+    # Faire des prédictions initiales
+    predictions = model.predict(new_data_scaled)
+    print("  - Prédictions réalisées.")
+
+    # Décoder les étiquettes
+    activity_predictions = le.inverse_transform(predictions)
+    #print("  - Prédictions décodées.")
+
+    # Remplacer les prédictions incertaines par "inconnu"
+    activity_predictions = np.where(max_probabilities < threshold, "inconnu", activity_predictions)
+
+    # Ajouter les prédictions des activités en tant que nouvelle colonne dans le DataFrame 'data'
+    data[cols2exclude] = data_cols2exclude
+    data['predicted_activity'] = activity_predictions
+    print("  - Prédictions ajoutées au DataFrame.")
+
+    # Extraire le nom de fichier sans extension
+    file_name_without_extension = os.path.splitext(file_name_with_extension)[0]
+    file_name = file_name_without_extension.split('_')[0]
+
+    # Créer le nom de fichier final pour l'export
+    output_file_name = f"{file_name}_activity_predictions.csv"
+
+    # Définir le chemin pour enregistrer le fichier CSV
+    output_path = os.path.join(OUT_PATH, output_file_name)
+
+    # Exporter le DataFrame 'data' en fichier CSV
+    data.to_csv(output_path, index=False)
+    print(f"  - Fichier exporté : {output_file_name}\n")
+
+    ###
+
+    # Visualisation du resultat
+    print("  - Création de la visualisation des résultats de la reconnaissance d'activités.")
+    
+    # Définir des couleurs pour chaque activité
+    palette = sns.color_palette("Set2", len(data['predicted_activity'].unique()))
+
+    # Tracer un graphique en nuage de points pour montrer les activités prédictes en fonction du temps
+    plt.figure(figsize=(18, 8))
+    sns.scatterplot(
+        x=data['window_id'], 
+        y=data['predicted_activity'], 
+        hue=data['predicted_activity'], 
+        palette=palette,
+        s=10  # Taille des points
+    )
+
+    # Ajouter des titres et des étiquettes
+    plt.title("Activité Prédite en Fonction du Temps", fontsize=16)
+    plt.xlabel("ID de la Fenêtre (Window ID)", fontsize=14)
+    plt.ylabel("Activité Prédite", fontsize=14)
+    plt.xticks(rotation=45)  # Rotation des étiquettes de l'axe x
+    plt.legend(title="Activité", bbox_to_anchor=(1.05, 1), loc='upper left')  # Placer la légende en dehors du graphique
+    plt.grid(visible=True, linestyle='--', alpha=0.5)
+
+    # Afficher le graphique
+    plt.tight_layout()
+    plt.show()
+
+print(f"Traitement terminé pour {total_files} fichiers.")
+```
+
+```{python}
+# run above
+
+```

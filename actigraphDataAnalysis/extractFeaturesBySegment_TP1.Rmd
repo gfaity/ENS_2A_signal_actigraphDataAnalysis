@@ -1,0 +1,265 @@
+---
+title: "Extract features by segment (for TP1_freeliving)"
+format:
+  html:
+    self-contained: true
+---
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE
+)
+#.vsc.attach()
+rm(list = ls()) # clear all variable
+gc() #clear garbage to free memory
+```
+
+
+```{r}
+#| echo: true
+#| code-fold: false
+
+# libraries
+library(dplyr) # manipulation de dataframes
+library(tidyr) # opération sur les dataframes
+library(ggplot2) # générer des illustations graphiques
+library(seewave) # pour les fonctions de filtrage
+library(signal) # pour certaines manipulations dans le domaine frequentiel
+library(patchwork) # pour arranger les plots facilement
+library(read.gt3x) #check also GGIR (for reading gt3x files [fast using C++])
+library(caret)    # Pour la sélection et la normalisation des features
+library(RcppRoll)  # Pour calculer les distances glissantes (utilitaire)
+library(data.table) # Plus efficace sur les grands ensembles de données
+library(LaF) # fast access to large ASCII files
+
+# WRK_PATH est le chemin vers le répertoire où se trouve notre projet et où se trouvent les fichiers mocap.
+# Vous devrez ajuster ce chemin en fonction de votre propre répertoire.
+WRK_PATH <- "C:/Users/germa/OneDrive/Documents/GitHub/ENS_2A_signal_actigraphDataAnalysis/actigraphDataAnalysis"
+
+# La fonction `setwd()` change le répertoire de travail pour celui que nous avons défini dans WRK_PATH.
+# Cela signifie que toute lecture/écriture de fichiers se fera à partir de ce répertoire.
+setwd(WRK_PATH)
+
+# On utilise la fonction `getwd()` pour afficher le répertoire de travail actuel et vérifier que le changement a bien eu lieu.
+cat("Répertoire de travail actuel :", getwd(), "\n")
+
+# Ensuite, nous définissons le chemin vers le dossier contenant les données à traiter et le chemin pour les résultats.
+# Ce dossier se trouve à l'intérieur de notre répertoire de travail.
+DAT_PATH <- file.path(WRK_PATH, "data")
+FCT_PATH <- file.path(WRK_PATH, "FCT", "R") #dossier contenant les fonctions R
+RES_PATH <- file.path(WRK_PATH, "RES")
+
+# Dans quel cas somme nous ?
+thisCase <- "TP1_freeliving" #"TP2_APstandard" 
+thisDAT_PATH <- file.path(DAT_PATH, thisCase)
+thisRES_PATH <- file.path(RES_PATH, thisCase)
+
+# On affiche également le chemin vers les données pour s'assurer qu'il est correct.
+cat("Répertoire des données :", thisDAT_PATH, "\n")
+
+# Lire les fonctions R
+r_files <- list.files(FCT_PATH, pattern = "\\.R$", full.names = TRUE)
+# Charger chaque fichier .R sans afficher de sortie
+invisible(lapply(r_files, source))
+# Afficher le nombre de fichiers .R chargés
+cat(length(r_files), "fichiers .R chargés avec succès.\n")
+```
+
+Nous sommes ici dans le cas `TP2 - activités standardisées`.
+
+Le but de ce code est le suivant:
+    - aller chercher les fichiers gt3x des activités standardisées (1 fichier par participant)
+    - aller chercher le fichier de labellisation (1 fichier global pour l'ensemble de la classe) pour obtenir les dates-heures de début et fin de chaque activité
+    - transformer les signaux de base pour obtenir 1 signal unique (norme de l'accélération) et propre (filtré, lissé)
+    - segmenter les data et labelliser en fonction des activités standardisées en cours
+    - pour chaque activité standardisé, extraire des paramètres d'intérêt (features extraction)
+    - ensuite, faire une sélection des paramètres les plus pertinents (feature selection)
+    - finalement, extraire tout cela dans un fichier .csv pour traitement futur (machine learning pour activity recognition)
+
+Commençons par lister les fichiers à aller chercher.
+
+```{r}
+# Lister les fichiers gt3x de tous les participants
+gt3x_files <- list.files(thisDAT_PATH, pattern = "*.gt3x", full.names = TRUE)
+```
+
+Maintenant rentrons dans le vif du sujet: faire une boucle pour tous les participants.
+
+```{r}
+# Set some parameters before looping
+
+# Window size and overlap
+window_size_sec <- 30 #we try with 30s to avoid errors #5 #10 #5 #2    # 2 or 5-second windows (results #1 are given with 5s windows)
+overlap_fraction <- 0.5 # 50% overlap
+# Cutting frequency for filtering with butterworth
+cut_freq <- 10 #no human movement above 10Hz
+
+# Pour enregistrer nos resultats
+windowSizeStr <- paste("windowSize_", window_size_sec, "s", sep="")
+dir.create(file.path(thisRES_PATH, windowSizeStr), recursive = TRUE) #créer le dossier si pas déjà existant
+
+# Nombre total de participants
+total_participants <- length(gt3x_files)
+
+# Début de la mesure du temps
+start_timeHere <- proc.time()
+
+# Loop over each participant's GT3X file
+for (i in seq_along(gt3x_files)) {
+    file_path <- gt3x_files[i]
+
+    # Extract participant ID from the file name
+    # Each file name is like this: "IDPARTICIPANT (AAAA-MM-DD).gt3x"
+    participant_fileName <- sub("\\.gt3x$", "", basename(file_path))
+    # Utiliser strsplit avec les caractères spéciaux échappés
+    resultStr <- strsplit(participant_fileName, "[() ]", perl = TRUE)
+    participant_id <- resultStr[[1]][1]
+    date <- resultStr[[1]][3]
+
+    # Print status
+    cat("Processing Participant:", participant_id, "- date start recording:",date, "\n")
+
+    # Import Accelerometer Data
+    # Use GGIR or an appropriate package to read GT3X files
+    thisDF <- read.gt3x(file_path)
+    thisDFtime <- as.data.frame(thisDF)$time
+    # Get sampling rate
+    sampling_rate <- attributes(as.data.frame(thisDF))$sample_rate
+    # Efficiency
+    thisDF <- as.data.table(thisDF)
+    # Filter data
+    thisDF <- cleanFilterAccelero(thisDF, cut_freq)
+    #  Compute accelerometer norm
+    thisDF <- getEMNO(thisDF)
+
+    # FOR TESTING: TOREMOVE (put TRUE for testing)
+    if (FALSE){
+        thisCut = 1000000
+        thisDF <- thisDF[seq(thisCut),]
+        thisDFtime <- thisDFtime[seq(thisCut)]
+    }
+    
+    # Skip if no data for this subject
+    if (nrow(thisDF) == 0) {
+        next
+    }
+
+    # Segment Data into Windows
+    thisDF <- segmentDataIntoWindows(thisDF, sampling_rate, window_size_sec, overlap_fraction)
+    # Save windows
+    windows_all <- thisDF$window
+    # Obtenir les identifiants uniques des fenêtres
+    window_ids <- unique(windows_all)
+    # Boucler sur chaque fenêtre
+    length_window_ids = length(window_ids)
+    windows_ends = c(which(diff(as.integer(windows_all))>0), nrow(thisDF))
+    windows_starts = c(1, which(diff(as.integer(windows_all))>0)+1)
+    windows_ends_time = thisDFtime[windows_ends]
+    windows_starts_time = thisDFtime[windows_starts]
+
+    # Create the CSV file name
+    output_file <- file.path(thisRES_PATH, windowSizeStr, paste0(participant_fileName, "_standardized_activity_features.csv"))
+    # remove output_file in case it already exists (clear it from previous computations)
+    if (file.exists(output_file)) {file.remove(output_file)}
+
+    # Save thisDF to a temporary file
+    temp_file <- file.path(thisDAT_PATH, "TMP", paste0(participant_fileName, "_TMP.csv"))
+    # remove temp file in case it already exists (clear it from previous computations)
+    if (file.exists(temp_file)) {file.remove(temp_file)}
+    # Save in temp file
+    fwrite(thisDF, temp_file)
+    # save colnames
+    colnames_temp_file <- names(thisDF)
+    
+    # laf = fast access to large ASCII files
+    # Créer une connexion au fichier temporaire
+    laf <- laf_open_csv(temp_file, column_types = rep("double", ncol(thisDF)))
+
+    # Remove thisDF from memory = we don't need it anymore
+    rm(thisDF, thisDFtime)
+    gc()
+
+    for (w in as.numeric(window_ids)){
+        # Afficher le numéro du participant en cours et le nombre total de participants
+        cat("Fenetre n°", w," sur ", length_window_ids, " --- Participant n°", i, "sur", total_participants, "\n")
+
+        # Sous-ensemble des données pour la fenêtre actuelle
+        start_row = windows_starts[w] 
+        end_row = windows_ends[w]
+
+        # Read only the rows for the current window
+        #part2_start <- Sys.time() #TOREMOVE (used to check time duration for optimization)
+        # if skip = 0, then skip 0 lines
+        # we should have skip = start_row, because it will the number of start_row (we should use with start_row-1 but there is a header so start_row-1 + 1 = start_row)
+        # initial method = fread
+        #   works but when start_row is becoming larger and larger time is increased significantly (because of skip parameter)
+        #   fread doit parcourir toutes les lignes depuis le début du fichier jusqu'à start_row. Cela signifie que plus start_row est grand, plus fread prend du temps pour atteindre la ligne souhaitée.
+        #   Même si fread est optimisé pour les grands fichiers, cette opération devient de plus en plus lente au fur et à mesure que start_row augmente.
+        #window_data <- fread(temp_file, skip = start_row, nrows = (end_row - start_row + 1)) 
+        # we use laf instead
+        window_data <- laf[(start_row+1):(end_row+1), ] # Lire uniquement les lignes nécessaires pour cette fenêtre
+        window_data <- as.data.table(window_data) # Convertir en data.table
+
+        # Assign column names to the window_data
+        setnames(window_data, colnames_temp_file)
+        #part2_end <- Sys.time() #TOREMOVE (used to check time duration for optimization)
+        #cat("Write time for part2", w, ":", part2_end - part2_start, "\n") #TOREMOVE (used to check time duration for optimization)
+
+        #window_data <- thisDF[window == w]
+        # Besoin pour avoir le temps de début et fin
+        #first_row <- which(thisDF$window == w)[1]
+        #last_row <- which(thisDF$window == w)[length(which(thisDF$window == w))]
+        #start_time <- thisDFtime[first_row]
+        #end_time <- thisDFtime[last_row]
+        start_time <- windows_starts_time[w]
+        end_time <- windows_ends_time[w]
+
+        # Extraire les caractéristiques de la fenêtre
+        features <- extract_features(window_data, sampling_rate)
+
+        # Vérifier si l'extraction des caractéristiques a réussi
+        if (is.null(features)) {
+            next  # Passer à la fenêtre suivante si aucune caractéristique n'a été extraite
+        }
+
+        # Ajouter les étiquettes aux caractéristiques
+        features$window_id <- as.numeric(w)
+        features$start_time <- start_time
+        features$end_time <- end_time
+        
+        # Write this window's features to the CSV
+        #write_start <- Sys.time() #TOREMOVE (used to check time duration for optimization)
+        fwrite(as.data.table(features), output_file, append = TRUE)
+        #write_end <- Sys.time() #TOREMOVE (used to check time duration for optimization)
+        #cat("Write time for window", w, ":", write_end - write_start, "\n") #TOREMOVE (used to check time duration for optimization)
+
+        # faire le menage
+        rm(features, window_data, start_time, end_time, start_row, end_row)
+        #gc() # this takes long so don't do it each iteration
+    }
+    # Fermer la connexion LaF
+    close(laf)
+
+    # remove temp file
+    if (file.exists(temp_file)) {file.remove(temp_file)}
+    # faire le menage
+    rm(thisDF, thisDFtime, sampling_rate, windows_all, window_ids, length_window_ids, windows_ends, windows_starts, windows_ends_time, windows_starts_time, temp_file, colnames_temp_file)
+    gc()
+}
+
+# Fin de la mesure du temps
+end_timeHere <- proc.time()
+
+# Calculer et afficher le temps écoulé
+execution_time <- end_timeHere - start_timeHere
+cat("Temps d'exécution :", execution_time["elapsed"], "secondes\n")
+```
+
+```{r}
+#run above
+
+# Vérifier s'il y a des valeurs NaN dans chaque colonne
+#nan_check <- sapply(final_feature_set, function(x) any(is.nan(x)))
+# Afficher les colonnes qui contiennent des NaN
+#colnames(final_feature_set)[nan_check]
+```

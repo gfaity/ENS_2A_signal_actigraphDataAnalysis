@@ -1,0 +1,762 @@
+---
+title: "Activity Recognition"
+format:
+    html:
+        code-fold: false
+        self-contained: true
+jupyter: python3
+---
+
+## Chargement des packages nécessaires au traitement des données
+
+```{python}
+# %% Initialisation
+
+# Nous commençons par importer les bibliothèques nécessaires pour travailler avec les données de motion capture (mocap).
+# Ces bibliothèques nous permettront de gérer les fichiers, manipuler les données et visualiser les résultats.
+
+import pandas as pd # Pour manipuler des dataframe
+import numpy as np  # Pour manipuler des tableaux et des données numériques, utile dans beaucoup de calculs
+from pyomeca import Markers  # Pyomeca est une bibliothèque dédiée à l'analyse de données biomécaniques. 
+# Ici, nous n'importons que la classe Markers, qui gère spécifiquement les trajectoires de marqueurs mocap.
+import matplotlib.pyplot as plt  # Pour créer des graphiques
+import seaborn as sns # Graphiques améliorés (type ggplot de R)
+from sklearn.preprocessing import LabelEncoder # Pour le machine learning (encoder les labels)
+from sklearn.preprocessing import StandardScaler # Pour le machine learning (normalisation des features)
+from sklearn.model_selection import train_test_split # Pour le machine learning (diviser les data en learning et test)
+from sklearn.model_selection import GroupKFold # Pour le machine learning (diviser les data en learning et test avec 5 groupes)
+from sklearn.ensemble import RandomForestClassifier # Pour le machine learning (modèle random forest)
+from sklearn.svm import SVC # Pour le machine learning (modèle SVM)
+from sklearn.neighbors import KNeighborsClassifier # Pour le machine learning (modèle k-NN)
+from sklearn.neural_network import MLPClassifier # Pour le machine learning (modèle Réseau de Neurones)
+from sklearn.metrics import accuracy_score, confusion_matrix, classification_report # Pour le machine learning (calculer les métriques de performance)
+from sklearn.model_selection import cross_val_score # Pour le machine learning (validation croisée)
+from sklearn.model_selection import GridSearchCV # Pour le machine learning (hyperparametres)
+from scipy.stats import friedmanchisquare # Statistiques: test de friedman
+from sklearn.ensemble import StackingClassifier # Pour le machine learning (ensemble learning)
+from imblearn.over_sampling import SMOTE # Pour le machine learning (équilibrage des classes majo/minoritaires)
+from tqdm import tqdm # Pour afficher barre de chargement / progression en %
+from sklearn.feature_selection import SelectKBest, f_classif # Pour le machine learning (Sélection de Caractéristiques)
+import joblib # Pour enregistrer les modeles de machine learning
+
+# Nous importons également le module 'os', qui permet de manipuler les fichiers et les répertoires sur notre système.
+import os
+```
+
+## Définir le répertoire de travail
+
+Python utilise un "répertoire de travail" qui est le dossier dans lequel Python va chercher et enregistrer des fichiers.
+Il est important de le définir correctement pour éviter les erreurs liées aux chemins de fichiers.
+
+```{python}
+# WRK_PATH est le chemin vers le répertoire où se trouve notre projet et où se trouvent les fichiers mocap.
+# Vous devrez ajuster ce chemin en fonction de votre propre répertoire.
+WRK_PATH = r"C:\Users\germa\OneDrive\Documents\GitHub\ENS_2A_signal_actigraphDataAnalysis\actigraphDataAnalysis"
+
+# La fonction `os.chdir()` change le répertoire de travail pour celui que nous avons défini dans WRK_PATH.
+# Cela signifie que toute lecture/écriture de fichiers se fera à partir de ce répertoire.
+os.chdir(WRK_PATH)
+
+# On utilise la fonction `os.getcwd()` pour afficher le répertoire de travail actuel et vérifier que le changement a bien eu lieu.
+print("Répertoire de travail actuel :", os.getcwd())
+
+# Ensuite, nous définissons le chemin vers le dossier contenant les données de motion capture (C3D).
+# Ce dossier se trouve à l'intérieur de notre répertoire de travail.
+DAT_PATH = os.path.join(WRK_PATH, "data")
+RES_PATH = os.path.join(WRK_PATH, "RES", "TP2_APstandard", "windowSize_5s")
+Class_PATH = os.path.join(RES_PATH, "ClassifierIA")
+os.makedirs(Class_PATH, exist_ok=True) #créer le dossier classifier s'il n'existe pas déjà
+
+# On affiche également le chemin vers les données pour s'assurer qu'il est correct.
+print(f"Répertoire des données : {RES_PATH}")
+```
+
+
+# Charger les Données
+
+```{python}
+# Charger les données
+stdActivityFeatures_PATH = os.path.join(RES_PATH, "standardized_activity_features.csv")
+data = pd.read_csv(stdActivityFeatures_PATH)
+
+# columns 2 exclude (not features)
+cols2exclude = ['participant_id','activity', 'phase','window_id', 'start_time', 'end_time']
+
+# Regrouper certaines activités pour simplifier le modèle
+# Check if the condition is True
+if True:
+    # Create a mapping dictionary
+    activity_mapping = {
+        'assis immobile': 'immobile',
+        'debout immobile': 'immobile',
+        'marche spontanee': 'marche',
+        'marche lente': 'marche',
+        'marche rapide': 'marche',
+        'course spontanee': 'course',
+        'velo spontanee': 'velo',
+        'escalier montee': 'escalier',
+        'escalier descente': 'escalier'
+    }
+
+    # Apply the mapping to create a new column 'activitySimpl'
+    data['activity'] = data['activity'].replace(activity_mapping)
+
+    # Display the updated DataFrame
+    #print(data[['activity', 'activitySimpl']].head())
+
+# Exlure certaines données
+# Exclure certaines colonnes
+#data = data.drop(['energy_band_4'], axis=1) 
+
+# Afficher les premières lignes
+#print(data.head())
+
+# Liste des activités
+# Vérifiez les activités présentes dans votre jeu de données :
+#print(data['activity'].unique())
+```
+
+**Afin d'améliorer la précision des modèles de machine learning, on prend la décision de simplifier le problème en joignant certaines activités ensemble pour diminuer le nombre d'activités (immobile, marche, course, escalier, vélo).***
+
+# Analyse Exploratoire des Données (EDA)
+
+Avant de commencer l'entraînement du modèle, il est important de comprendre les données.
+
+## Vérifier la Distribution des Activités
+
+```{python}
+# Compter le nombre d'échantillons par activité
+activity_counts = data['activity'].value_counts()
+
+# Afficher la distribution
+activity_counts.plot(kind='bar')
+plt.title('Distribution des activités')
+plt.xlabel('Activité')
+plt.ylabel('Nombre d\'échantillons')
+plt.show()
+```
+
+Pourquoi ?  
+    - Pour vérifier si les données sont équilibrées entre les différentes classes.  
+    - Si les données sont déséquilibrées, certaines classes pourraient dominer l'apprentissage.  
+  
+## Vérifier les Caractéristiques
+
+Statistiques descriptives :
+
+```{python}
+print(data.describe())
+```
+
+Visualiser les caractéristiques par activité :
+
+```{python}
+# Liste des colonnes d'intérêt (features) à visualiser
+# Exclure les colonnes non désirées
+features = data.columns.difference(cols2exclude)
+
+# Boucle pour créer un boxplot pour chaque feature
+for feature in features:
+    plt.figure(figsize=(10, 5))
+    sns.boxplot(x='activity', y=feature, data=data)
+    plt.title(f'Distribution de {feature} par activité')
+    plt.xticks(rotation=90)
+    plt.show()
+```
+
+Pourquoi ?  
+    - Pour voir si les caractéristiques permettent de distinguer les activités.  
+    - Identifier les caractéristiques les plus discriminantes.  
+  
+# Prétraitement des Données pour le Machine Learning
+
+## Encodage des Étiquettes
+
+Les algorithmes de machine learning nécessitent que les étiquettes soient numériques.
+
+```{python}
+# Créer un encodeur
+le = LabelEncoder()
+
+# Encoder les activités
+data['activity_encoded'] = le.fit_transform(data['activity'])
+
+# Afficher les correspondances
+activity_mapping = dict(zip(le.classes_, le.transform(le.classes_)))
+#print(activity_mapping)
+```
+
+## Séparation des Caractéristiques et des Étiquettes
+
+```{python}
+# Séparer les caractéristiques (X) et les étiquettes (y)
+X = data.drop(cols2exclude + ['activity_encoded'], axis=1)
+y = data['activity_encoded']
+```
+
+## Normalisation des Caractéristiques
+
+```{python}
+# Créer un scaler
+scaler = StandardScaler()
+
+# Ajuster le scaler sur les données et transformer
+X_scaled = scaler.fit_transform(X)
+```
+
+## Diviser les Données en Enseignement et Test
+
+Pour évaluer le modèle, il est important de diviser les données en ensembles d'entraînement et de test.
+
+```{python}
+# Diviser les données (par exemple, 70% entraînement, 30% test)
+#X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.3, random_state=42, stratify=y)
+
+# Créer l'objet GroupKFold avec, par exemple, 4 groupes (4x4 = 16 participants)
+this_n_splits=4
+gkf = GroupKFold(n_splits=this_n_splits)
+
+# Itérer sur les indices des ensembles d'entraînement et de test
+for train_index, test_index in gkf.split(X, y, groups=data['participant_id']):
+    X_train, X_test = X_scaled[train_index], X_scaled[test_index]
+    y_train, y_test = y[train_index], y[test_index]
+
+# Appliquer SMOTE pour équilibrer les classes majoritaires/minoritaires
+sm = SMOTE(random_state=42)
+X_train, y_train = sm.fit_resample(X_train, y_train)
+
+# Afficher le nombre d'échantillons par classe après le suréchantillonnage
+print("Nombre d'échantillons par classe après SMOTE :")
+unique, counts = np.unique(y_train, return_counts=True)
+print(dict(zip(unique, counts)))
+
+# Sélection des meilleures features avec SelectKBest
+selector = SelectKBest(score_func=f_classif, k='all')  # 'k' peut être ajusté si vous souhaitez sélectionner un nombre spécifique de features (ex: 10) # Si on laisse k='all', cela ne change rien car pas de sélection, et donc uniquement affichage informatif des score de chaque feature # Pour les scores des caractéristiques (ou features) obtenus via SelectKBest avec f_classif (ANOVA F-value), le mieux est d'avoir un score le plus haut possible.
+selector.fit(X_train, y_train)
+scores = selector.scores_
+
+# Afficher les scores pour chaque caractéristique
+feature_scores = pd.DataFrame({'Feature': X.columns, 'Score': scores})
+print(feature_scores.sort_values(by='Score', ascending=False))
+
+# Mettre à jour X_train et X_test avec les caractéristiques sélectionnées
+X_train = selector.transform(X_train)
+X_test = selector.transform(X_test)
+```
+
+Pourquoi stratify=y ?  
+    - Pour s'assurer que la distribution des classes est la même dans les ensembles d'entraînement et de test.  
+  
+Pourquoi utiliser GroupKFold ?  
+    - Cela garantit que les données d'un même participant ne sont pas présentes à la fois dans l'ensemble d'entraînement et dans l'ensemble de test, ce qui est important pour évaluer la généralisation de votre modèle.  
+  
+Pourquoi utiliser 4 groupes ici ?  
+  
+L’utilisation de 4 groupes (ou "splits") dans la validation croisée avec GroupKFold est une pratique courante qui offre un bon équilibre entre la robustesse de l’évaluation et le coût computationnel. Voici pourquoi :  
+    - Équilibre entre biais et variance  
+        Un nombre trop faible de groupes (comme 2 ou 3) peut conduire à une estimation de performance avec une grande variance (c'est-à-dire, des résultats qui dépendent beaucoup de la partition spécifique des données).  
+        Un nombre trop élevé de groupes (comme 10 ou plus) augmente le coût computationnel sans toujours apporter de gains significatifs en termes de performance du modèle, surtout si le nombre total de participants est limité.  
+    - Représentation adéquate des participants  
+        4 à 5 groupes permettent de s'assurer que la majorité des participants sont bien représentés dans les différentes partitions, garantissant que chaque split offre une vue équilibrée de la variabilité inter-participants.  
+        Si vous avez un nombre important de participants, cela aide à s'assurer que l'évaluation est représentative de la diversité de vos données.  
+    - Pratique courante  
+        5 ou 10 splits sont des choix conventionnels dans la validation croisée car ils offrent généralement un bon compromis entre la stabilité de l’évaluation et l’efficacité du calcul.  
+    - Ajustement selon votre cas  
+        Si votre dataset comporte un petit nombre de participants, vous pourriez envisager d’utiliser moins de groupes.
+        À l’inverse, si vous avez beaucoup de participants, augmenter le nombre de groupes pourrait donner une évaluation encore plus précise.  
+En résumé, 4 à 5 groupes constituent un point de départ solide pour la validation croisée, mais ce choix peut être ajusté en fonction de la taille et de la diversité de votre échantillon.  
+  
+Pourquoi Utiliser SMOTE ?  
+    - Équilibre les Classes : SMOTE crée de nouveaux échantillons synthétiques pour les classes minoritaires, ce qui aide les modèles à apprendre de manière plus équilibrée.  
+    - Amélioration des Performances : Cela peut améliorer la précision des modèles pour les classes minoritaires, réduisant ainsi le biais en faveur des classes majoritaires.  
+  
+Pourquoi Utiliser selector.transform ?
+  
+Dans les problèmes de machine learning, surtout lorsque vous travaillez avec des jeux de données contenant de nombreuses caractéristiques (features), il est crucial de savoir si toutes ces caractéristiques sont vraiment nécessaires pour la prédiction. Certaines caractéristiques peuvent :  
+    - Être redondantes : Elles n'apportent pas d'information supplémentaire par rapport aux autres caractéristiques.  
+    - Introduire du bruit : Elles peuvent rendre le modèle plus complexe et moins performant.  
+    - Augmenter le risque de surapprentissage (overfitting) : Si un modèle apprend des caractéristiques inutiles, il risque de moins bien généraliser sur de nouvelles données.  
+  
+SelectKBest est une méthode de sélection de caractéristiques qui aide à choisir les caractéristiques les plus pertinentes en utilisant une mesure statistique. Voici comment cela fonctionne :  
+    - Évaluer l'Importance de Chaque Caractéristique : SelectKBest utilise une fonction statistique (ici, f_classif) pour évaluer chaque caractéristique de manière indépendante.  
+        - f_classif est basé sur l'ANOVA F-test (analyse de la variance) : il compare la variance entre les différentes classes (catégories) avec la variance à l'intérieur des classes.  
+        - Un score F élevé signifie que la caractéristique est probablement importante pour distinguer les classes.
+    - Attribuer un Score à Chaque Caractéristique : SelectKBest calcule un score pour chaque caractéristique, indiquant son importance pour la tâche de classification.  
+        - Plus le score est élevé, plus la caractéristique est jugée importante.  
+    - Sélection des Meilleures Caractéristiques :  
+        - Vous pouvez choisir combien de caractéristiques vous souhaitez conserver en définissant le paramètre k.  
+        - Par exemple, si k=10, SelectKBest sélectionnera les 10 caractéristiques avec les scores les plus élevés.  
+  
+Pourquoi Utiliser la Sélection de Caractéristiques ?  
+    - Réduire la Complexité du Modèle : Moins de caractéristiques signifie un modèle plus simple, qui est plus rapide à entraîner et à exécuter.  
+    - Améliorer les Performances : En supprimant les caractéristiques inutiles, vous diminuez le risque de surapprentissage et pouvez améliorer la précision de votre modèle.  
+    - Faciliter l'Interprétation : Avoir moins de caractéristiques rend le modèle plus compréhensible. Cela peut aider à expliquer pourquoi certaines décisions sont prises par le modèle.  
+    - Optimiser les Ressources : Si vous travaillez avec un grand ensemble de données, réduire le nombre de caractéristiques peut économiser de la mémoire et du temps de calcul.  
+  
+# Choisir et Entraîner un Modèle de Machine Learning
+
+Pour la classification des activités, plusieurs algorithmes peuvent être utilisés. Nous allons utiliser :  
+    - Random Forest  
+    - Support Vector Machine (SVM)  
+    - k-Nearest Neighbors (k-NN)  
+    - Réseaux de Neurones  
+  
+## Entraîner un Modèle Random Forest
+
+```{python}
+# Créer le modèle
+rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
+
+# Entraîner le modèle
+rf_model.fit(X_train, y_train)
+```
+
+Paramètres :  
+    - n_estimators=100 : Cela signifie que le modèle utilise 100 arbres de décision pour faire des prédictions. 100 est un choix raisonnable pour obtenir une bonne performance, mais vous pourriez tester des valeurs plus élevées si vous souhaitez améliorer la précision, au détriment du temps de calcul.  
+    - random_state=42 : Fixer la graine pour garantir la reproductibilité des résultats.  
+  
+## Entraîner un Modèle SVM
+
+```{python}
+# Créer le modèle
+svm_model = SVC(kernel='rbf', probability=True, random_state=42)
+
+# Entraîner le modèle
+svm_model.fit(X_train, y_train)
+```
+
+Paramètres :  
+    - kernel='rbf' : Le noyau radial (RBF) est un choix commun pour les problèmes non linéaires. Il est adapté à de nombreuses applications où les frontières entre les classes ne sont pas linéaires.  
+    - probability=True : Active le calcul des probabilités, utile si vous souhaitez obtenir des probabilités de classe pour vos prédictions. Cela peut ralentir l'entraînement.  
+    - random_state=42 : Fixe la graine pour la reproductibilité.  
+Le noyau RBF est une bonne option pour commencer. Si les performances sont médiocres, vous pourriez essayer d'autres noyaux (comme linear ou poly).  
+  
+## Entraîner un Modèle k-NN
+
+```{python}
+# Créer le modèle
+knn_model = KNeighborsClassifier(n_neighbors=5)
+
+# Entraîner le modèle
+knn_model.fit(X_train, y_train)
+```
+
+Paramètres :  
+    - n_neighbors=5 : Utilise les 5 voisins les plus proches pour faire une prédiction. 5 est un choix par défaut courant et fonctionne bien pour de nombreuses applications.  
+    - Justification : Le nombre de voisins peut avoir un impact significatif sur les performances. Si les résultats sont insatisfaisants, vous pourriez essayer d'augmenter ou de diminuer n_neighbors pour tester.  
+Modification potentielle : Ajuster n_neighbors en fonction de la complexité de votre problème ou si vous remarquez un sur-apprentissage ou un sous-apprentissage.  
+  
+## Entraîner un Réseau de Neurones
+
+```{python}
+# Créer le modèle
+mlp_model = MLPClassifier(hidden_layer_sizes=(100,), max_iter=300, random_state=42)
+
+# Entraîner le modèle
+mlp_model.fit(X_train, y_train)
+```
+
+Paramètres :  
+    - hidden_layer_sizes=(100,) : Un réseau de neurones avec une seule couche cachée contenant 100 neurones. C'est un choix de base raisonnable, mais vous pouvez ajuster la taille et le nombre de couches en fonction de la complexité de votre problème.  
+    - max_iter=300 : Le nombre maximal d'itérations pour la convergence. 300 est généralement suffisant pour les problèmes simples, mais peut devoir être augmenté si le modèle ne converge pas.  
+    - random_state=42 : Fixe la graine pour la reproductibilité.  
+Ce réseau est relativement simple et peut ne pas être suffisant pour des données très complexes. Vous pourriez envisager d'augmenter le nombre de couches ou de neurones si les performances sont insuffisantes.  
+  
+Modification potentielle : Augmenter hidden_layer_sizes ou max_iter si le modèle ne converge pas ou s'il ne capture pas la complexité de vos données.  
+  
+# Évaluer et Valider le Modèle
+
+## Prédire sur l'Ensemble de Test
+
+```{python}
+# Random Forest
+y_pred_rf = rf_model.predict(X_test)
+
+# SVM
+y_pred_svm = svm_model.predict(X_test)
+
+# k-NN
+y_pred_knn = knn_model.predict(X_test)
+
+# Réseau de Neurones
+y_pred_mlp = mlp_model.predict(X_test)
+```
+
+## Calculer les Métriques de Performance
+
+Pour chaque modèle, calculer :  
+    - Accuracy (précision globale)  
+    - Matrice de confusion  
+    - Précision, Rappel, F1-Score  
+  
+```{python}
+# Fonction pour évaluer le modèle
+def evaluate_model(y_true, y_pred, model_name):
+    print(f"Évaluation du modèle : {model_name}")
+    print("Accuracy:", accuracy_score(y_true, y_pred))
+    print("\nClassification Report:\n", classification_report(y_true, y_pred))
+    print("\nMatrice de Confusion:")
+    cm = confusion_matrix(y_true, y_pred)
+    print(cm)
+    print("\n")
+
+# Évaluer Random Forest
+evaluate_model(y_test, y_pred_rf, "Random Forest")
+
+# Évaluer SVM
+evaluate_model(y_test, y_pred_svm, "SVM")
+
+# Évaluer k-NN
+evaluate_model(y_test, y_pred_knn, "k-NN")
+
+# Évaluer Réseau de Neurones
+evaluate_model(y_test, y_pred_mlp, "Réseau de Neurones")
+```
+
+## Visualiser la Matrice de Confusion et Interpréter les Résultats
+
+Utiliser une heatmap pour visualiser la matrice de confusion (en pourcentage):
+
+```{python}
+def plot_confusion_matrix_percentage(y_true, y_pred, model_name):
+    cm = confusion_matrix(y_true, y_pred)
+    cm_percentage = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis] * 100  # Conversion en pourcentages
+    
+    plt.figure(figsize=(10, 7))
+    sns.heatmap(cm_percentage, annot=True, fmt='.2f', cmap='viridis', 
+                xticklabels=le.classes_, yticklabels=le.classes_)
+    plt.title(f"Matrice de Confusion (en %) - {model_name}")
+    plt.ylabel('Vérité terrain')
+    plt.xlabel('Prédictions')
+    plt.show()
+```
+
+## Random Forest
+
+```{python}
+# Pour Random Forest
+plot_confusion_matrix_percentage(y_test, y_pred_rf, "Random Forest")
+```
+
+Comment intérpréter les résultats ?  
+    - Accuracy élevée : Le modèle est performant.  
+    - Confusion entre certaines activités : Identifier les activités souvent confondues et envisager des moyens pour améliorer la distinction (ajout de nouvelles caractéristiques, etc.).  
+  
+Structure de la Matrice  
+    - Axes : L'axe des y (vertical) représente la vérité terrain (les classes réelles), tandis que l'axe des x (horizontal) représente les prédictions faites par le modèle Random Forest.  
+    - Pourcentage sur chaque ligne : Chaque ligne montre la répartition des prédictions pour une classe réelle donnée. Les valeurs sont normalisées pour que la somme de chaque ligne soit de 100%. Cela permet de comprendre la proportion d'exemples d'une classe particulière qui sont correctement ou incorrectement classifiés.  
+    - Pourcentage sur chaque colonne : Les colonnes représentent les prédictions d'une classe spécifique. Ces pourcentages ne sont pas normalisés pour totaliser 100%, car ils dépendent de combien d'exemples de différentes classes réelles sont confondus et attribués à cette classe prédite.  
+
+Analyse des Résultats pour le modèle Random Forest
+
+Classes bien distinguées :
+    - Course spontanée : Le modèle fait un excellent travail avec cette classe, obtenant une précision de 99.17%. Cela montre que les caractéristiques de cette activité sont très distinctes.
+    - Vélo spontané : Cette classe est également bien distinguée, avec 94.17% des prédictions correctes.
+
+Classes problématiques :
+    - Assis immobile vs. Debout immobile : Le modèle confond fréquemment ces deux classes, avec 44.30% des exemples de "debout immobile" classifiés comme "assis immobile". Cela suggère que le modèle a du mal à différencier les états statiques.
+    - Escalier descente vs. Escalier montée : Il y a une confusion notable entre ces deux classes, avec 39.05% de "escalier descente" correctement classifiés, mais aussi une distribution significative des prédictions sur "escalier montée". Ces activités partagent probablement des caractéristiques similaires.
+    - Marche lente, rapide et spontanée : On observe une certaine confusion entre les différentes vitesses de marche, en particulier "marche rapide" et "marche spontanée". Cela indique que le modèle a du mal à distinguer les variations subtiles de la marche.
+
+***On prends alors la décision de simplifier le problème en joignant certaines activités ensemble pour diminuer le nombre d'activités et simplifier le probleme (immobile, marche, course, escalier, vélo). Cela a pour effet d'améliorer grandement la précision du modèle surtout sur les activités qui pouvaient être confondues.***
+
+On applique cette simplification à l'ensemble des modèles.
+
+## SVM
+
+```{python}
+# Pour SVM
+plot_confusion_matrix_percentage(y_test, y_pred_svm, "SVM")
+```
+
+## k-NN
+
+```{python}
+# Pour k-NN
+plot_confusion_matrix_percentage(y_test, y_pred_knn, "k-NN")
+```
+
+## Réseau de Neurones
+
+```{python}
+# Pour Réseau de Neurones
+plot_confusion_matrix_percentage(y_test, y_pred_mlp, "Réseau de Neurones")
+```
+
+# Optimisation du Modèle
+
+## Validation Croisée (Cross-Validation)
+
+Utiliser la validation croisée pour évaluer la robustesse du modèle.
+
+```{python}
+# Définir les modèles dans un dictionnaire pour itérer facilement
+models = {
+    "Random Forest": rf_model,
+    "SVM": svm_model,
+    "k-NN": knn_model,
+    "Réseau de Neurones": mlp_model
+}
+
+# Effectuer la validation croisée pour chaque modèle
+for model_name, model in models.items():
+    print(f"Validation croisée pour {model_name}:")
+    
+    # Calcul des scores de cross-validation
+    cv_scores = cross_val_score(model, X_scaled, y, cv=this_n_splits, scoring='accuracy')
+    
+    # Affichage des résultats
+    print("Scores de cross-validation:", cv_scores.round(2))
+    print("Accuracy moyenne:", cv_scores.mean().round(2))
+    print("-" * 50)
+```
+
+## Recherche des Hyperparamètres (Grid Search)
+
+Optimiser les hyperparamètres des modèles pour améliorer les performances.
+
+```{python}
+# Définir les grilles de paramètres pour chaque modèle
+param_grids = {
+    "Random Forest": {
+        'n_estimators': [50, 100, 200],
+        'max_depth': [None, 10, 20],
+        'min_samples_split': [2, 5, 10]
+    },
+    "SVM": {
+        'C': [0.1, 1, 10],
+        'kernel': ['linear', 'rbf'],
+        'gamma': ['scale', 'auto']
+    },
+    "k-NN": {
+        'n_neighbors': [3, 5, 7, 9],
+        'weights': ['uniform', 'distance']
+    },
+    "Réseau de Neurones": {
+        'hidden_layer_sizes': [(50,), (100,), (100, 50)],
+        'max_iter': [200, 300, 500],
+        'alpha': [0.0001, 0.001, 0.01]
+    }
+}
+
+# Initialiser un dictionnaire pour stocker les meilleurs modèles
+best_models = {}
+
+# Itérer sur chaque modèle et effectuer une Grid Search avec affichage des informations
+for model_name, model in models.items():
+    print(f"Recherche des hyperparamètres pour {model_name}...")
+    
+    # Créer le GridSearchCV
+    grid_search = GridSearchCV(estimator=model, param_grid=param_grids[model_name], 
+                               cv=this_n_splits, scoring='accuracy', n_jobs=-1)
+    
+    # Exécuter la recherche
+    print(f"Optimisation des hyperparamètres pour {model_name}, cela peut prendre un certain temps...")
+    grid_search.fit(X_train, y_train)
+    
+    # Récupérer les meilleurs paramètres et le meilleur modèle
+    best_params = grid_search.best_params_
+    best_estimator = grid_search.best_estimator_
+    best_models[model_name] = best_estimator
+    
+    # Afficher les informations pertinentes
+    print(f"Meilleurs paramètres pour {model_name} : {best_params}")
+    print(f"Score de la meilleure configuration pour {model_name} : {grid_search.best_score_:.2f}")
+    print("-" * 50)
+
+# Résumé des meilleurs modèles
+print("\nRésumé des modèles optimisés :")
+for model_name, model in best_models.items():
+    print(f"{model_name} - Meilleur modèle : {model}")
+```
+
+# Évaluer les Meilleurs Modèles
+
+Finalement, on évalue les modèles optimisés et on compare leurs performances.
+
+```{python}
+# Évaluer chaque modèle optimisé
+for model_name, model in best_models.items():
+    y_pred = model.predict(X_test)
+    print(f"Évaluation pour {model_name} (Optimisé) :")
+    evaluate_model(y_test, y_pred, f"{model_name} Optimisé")
+    print("-" * 50)
+```
+
+On notera une différence entre l'accuracy affichée pour le modèle optimisé et les scores de cross-validation (validation croisée) de la meilleure configuration. Voici pourquoi ces deux métriques sont différentes :
+
+- Scores de Cross-Validation (Validation Croisée)  
+    - Ces scores proviennent de la validation croisée qui divise l'ensemble d'entraînement en plusieurs sous-ensembles (folds) pour évaluer les performances du modèle de manière plus robuste.  
+    - Le modèle est entraîné sur un ensemble de folds et testé sur les folds restants, et ce processus est répété pour chaque division. L'accuracy moyenne des répétitions est calculée, ce qui donne une estimation plus fiable de la performance attendue sur de nouvelles données.  
+    - Ces scores ne prennent en compte que l'ensemble d'entraînement (et sa division en folds) et ne sont pas calculés sur l'ensemble de test final.  
+- Accuracy sur l'Ensemble de Test  
+    - Cette mesure est calculée après avoir entraîné le modèle final (avec les meilleurs hyperparamètres trouvés) sur l'ensemble d'entraînement complet, puis en l'évaluant sur l'ensemble de test.  
+    - Cela représente la performance du modèle sur des données qu'il n'a jamais vues auparavant (l'ensemble de test), et elle peut être légèrement différente de l'accuracy de validation croisée en raison de la variabilité des données.  
+  
+Pourquoi les Résultats Diffèrent ?  
+    - Variabilité des Données : L'ensemble de test est distinct des ensembles utilisés pour la validation croisée. La distribution des données dans l'ensemble de test peut être différente de celle observée pendant la validation croisée, ce qui peut affecter les performances.  
+    - Sur-ajustement : Le modèle peut être légèrement sur-ajusté à l'ensemble d'entraînement, ce qui signifie qu'il performe mieux pendant la validation croisée mais un peu moins bien sur les données vraiment inédites.  
+    - Taille de l'Échantillon : Si votre ensemble de test est relativement petit par rapport à l'ensemble d'entraînement, les fluctuations dues à la taille de l'échantillon peuvent aussi causer des différences entre ces mesures.  
+  
+Conclusion  
+    - Scores de Cross-Validation : Fournissent une estimation de la performance généralisée du modèle, mais basée uniquement sur des partitions de l'ensemble d'entraînement.  
+    - Accuracy sur l'Ensemble de Test : Donne une mesure plus concrète de la performance du modèle sur des données complètement indépendantes, et c'est souvent ce score qui est le plus pertinent pour évaluer la performance réelle du modèle.  
+Les deux métriques sont utiles pour comprendre la performance globale de votre modèle, mais il est normal qu'elles ne soient pas identiques.  
+
+## Analyse Comparative avec Visualisation
+
+```{python}
+# Stocker les accuracies des modèles optimisés
+model_accuracies = {}
+for model_name, model in best_models.items():
+    accuracy = accuracy_score(y_test, model.predict(X_test))
+    model_accuracies[model_name] = accuracy
+
+# Créer un DataFrame pour faciliter la visualisation
+accuracy_df = pd.DataFrame.from_dict(model_accuracies, orient='index', columns=['Accuracy']).reset_index()
+accuracy_df.rename(columns={'index': 'Model'}, inplace=True)
+
+# Tracer les accuracies
+plt.figure(figsize=(10, 6))
+sns.barplot(x='Model', y='Accuracy', data=accuracy_df)
+plt.title("Comparaison des Accuracies des Modèles Optimisés")
+plt.xlabel("Modèle")
+plt.ylabel("Accuracy")
+plt.show()
+```
+
+## Tests Statistiques pour Comparer les Modèles
+
+Pour évaluer si les différences entre les modèles sont statistiquement significatives, on utilise un test de Friedman (approprié pour des mesures répétées).
+
+```{python}
+print("Tests Statistiques pour Comparer les Modèles En Cours...")
+
+# Exemple de test de Friedman (nécessite des résultats détaillés pour chaque pli de validation croisée)
+# Cela comparerait les modèles sur les mêmes ensembles de validation croisée
+scores_rf = cross_val_score(best_models["Random Forest"], X_scaled, y, cv=this_n_splits, scoring='accuracy')
+scores_svm = cross_val_score(best_models["SVM"], X_scaled, y, cv=this_n_splits, scoring='accuracy')
+scores_knn = cross_val_score(best_models["k-NN"], X_scaled, y, cv=this_n_splits, scoring='accuracy')
+scores_mlp = cross_val_score(best_models["Réseau de Neurones"], X_scaled, y, cv=this_n_splits, scoring='accuracy')
+
+# Effectuer le test de Friedman
+stat, p = friedmanchisquare(scores_rf, scores_svm, scores_knn, scores_mlp)
+print("Statistique de Friedman :", stat)
+print("p-valeur :", p)
+
+if p < 0.05:
+    print("Il y a une différence significative entre les modèles.")
+else:
+    print("Pas de différence significative entre les modèles.")
+```
+
+Analyse Finale  
+    - Interprétation des Résultats : On peut utiliser l'accuracy moyenne et les résultats du test statistique pour élire le meilleur modèle.  
+    - Meilleur Modèle : Si un modèle se distingue significativement, on peut le sélectionner pour notre application Sinon, on peut envisager de combiner les modèles (ensemble learning) pour de meilleures performances.  
+Cette approche permet de comparer efficacement les performances des modèles et de choisir le meilleur pour notre tâche de reconnaissance d'activité.  
+  
+Ici, on ne voit pas de différence significative selon les modèles (mais pas loin), on peut donc appliquer la technique "Ensemble learning".  
+
+# Ensemble learning
+
+Qu'est-ce que l'Ensemble Learning ?  
+  
+L'ensemble learning est une méthode qui combine plusieurs modèles pour obtenir de meilleures performances que n'importe quel modèle individuel. L'idée est de tirer parti des forces de chaque modèle pour améliorer la précision et la robustesse des prédictions. Voici les techniques courantes d'ensemble learning :  
+    - Bagging (Bootstrap Aggregating) : Cette méthode, utilisée par des modèles comme Random Forest, combine plusieurs modèles de même type (par exemple, des arbres de décision) en moyenne les prédictions pour réduire la variance.  
+    - Boosting : Cette technique combine plusieurs modèles faibles (comme des arbres de décision) de manière séquentielle, chaque modèle suivant se concentrant sur les erreurs des modèles précédents.  
+    - Stacking : Cette méthode utilise plusieurs modèles différents en parallèle, puis un modèle "méta" (ou "secondaire") pour combiner leurs prédictions.  
+
+## Implémentation de Stacking (Appropriée dans ce cas)
+
+Comme on a plusieurs modèles qui performent de manière similaire, on peut essayer de les combiner en utilisant la méthode de stacking. Voici comment l'appliquer :  
+
+### Créer un StackingClassifier
+
+Pour cette implémentation, nous allons utiliser Random Forest, SVM, k-NN, et le Réseau de Neurones comme modèles de base, et un Random Forest comme modèle méta.  
+
+```{python}
+print("Création et évaluation d'un stacking classifier en cours...")
+
+# Définir les modèles de base
+estimators = [
+    ('Random Forest', best_models["Random Forest"]),
+    ('SVM', best_models["SVM"]),
+    ('k-NN', best_models["k-NN"]),
+    ('Réseau de Neurones', best_models["Réseau de Neurones"])
+]
+
+# Créer le modèle StackingClassifier
+stacking_model = StackingClassifier(estimators=estimators, final_estimator=RandomForestClassifier(random_state=42))
+
+# Entraîner le modèle stacking
+stacking_model.fit(X_train, y_train)
+```
+
+### Évaluer le Modèle Stacking
+
+Vous pouvez utiliser les mêmes fonctions que précédemment pour évaluer ce modèle combiné :
+
+```{python}
+# Prédire avec le modèle stacking
+y_pred_stacking = stacking_model.predict(X_test)
+
+# Évaluer le modèle
+evaluate_model(y_test, y_pred_stacking, "Stacking Classifier")
+```
+
+Analyse des Résultats  
+  
+Interprétation : Si le modèle stacking offre de meilleures performances (par exemple, une accuracy plus élevée) ou une réduction de la variance des prédictions, cela signifie que l'ensemble learning a bien fonctionné.  
+  
+Avantages :  
+    - Robustesse accrue : En combinant plusieurs modèles, vous réduisez le risque d'erreurs dues aux faiblesses d'un modèle spécifique.  
+    - Meilleure généralisation : Le stacking peut généraliser mieux que chaque modèle individuel, surtout si les modèles de base sont diversifiés.  
+  
+Pourquoi l'Ensemble Learning Fonctionne ?  
+    - Variance : En combinant plusieurs modèles, l'ensemble learning réduit la variance des prédictions, ce qui est particulièrement utile pour des modèles comme k-NN qui peuvent être sensibles aux variations des données.  
+    - Biais : Si certains modèles ont un biais élevé (comme les modèles linéaires pour des problèmes non linéaires), d'autres modèles peuvent compenser ce biais.  
+    - Diversité des Modèles : En utilisant des modèles qui capturent différentes relations dans les données, vous augmentez les chances d'une prédiction correcte, car chaque modèle apporte sa propre perspective.  
+  
+Conclusion  
+L'ensemble learning, et plus spécifiquement le stacking, est une technique puissante pour améliorer la performance globale. Si les différences entre vos modèles ne sont pas significatives, le stacking est une excellente option pour bénéficier de la complémentarité de ces modèles.  
+
+***En l'occurence, ici le modèle stacking ne fait pas mieux que les modèles individuels. On va alors tous les sauvegarder pour les réutiliser pour la reconnaissance des activités sur les enregistrements de la vie quotidienne.***
+
+# Exporter le meilleur modèle d'IA (ici le modèle de stacking)
+
+Pour exporter le modèle de stacking (ou tout autre modèle d'IA) ainsi que les objets nécessaires pour les réutiliser dans un autre environnement Python, vous pouvez suivre ces étapes :
+
+## Utiliser joblib pour Sauvegarder le Modèle
+joblib est une bibliothèque de Python qui permet de sauvegarder et charger des objets complexes (comme des modèles de machine learning) de manière efficace.
+
+## Sauvegarder le Modèle Stacking et les Objets Nécessaires
+
+Vous pouvez sauvegarder votre modèle et d'autres objets (comme les scalers de normalisation) dans des fichiers .pkl :
+
+```{python}
+# Sauvegarder les meilleurs modèles optimisé pour chaque type
+joblib.dump(best_models["Random Forest"], os.path.join(Class_PATH, "best_randomForest_model.pkl"))
+joblib.dump(best_models["SVM"], os.path.join(Class_PATH, "best_SVM_model.pkl"))
+joblib.dump(best_models["k-NN"], os.path.join(Class_PATH, "best_k-NN_model.pkl"))
+joblib.dump(best_models["Réseau de Neurones"], os.path.join(Class_PATH, "best_NeuronNetwork_model.pkl"))
+
+# Sauvegarder le modèle stacking
+joblib.dump(stacking_model, os.path.join(Class_PATH, "stacking_model.pkl"))
+
+# Sauvegarder le scaler utilisé pour normaliser les données (si nécessaire)
+joblib.dump(scaler, os.path.join(Class_PATH, "scaler.pkl"))
+
+# Sauvegarder les encodages des étiquettes (si nécessaire)
+joblib.dump(le, os.path.join(Class_PATH, "label_encoder.pkl"))
+
+print("Modèle et objets sauvegardés avec succès.")
+```
+
+En utilisant joblib, vous pouvez facilement exporter et importer vos modèles et objets de prétraitement.  
+Cela vous permet d'appliquer votre modèle d'IA sur de nouvelles données d'accéléromètre, comme celles provenant d'une étude de 7 jours sur la vie quotidienne.  
+Assurez-vous que les nouvelles données sont prétraitées de la même manière que les données d'entraînement (normalisation, extraction des mêmes caractéristiques, etc.) pour garantir des résultats cohérents.  
+
+
+```{python}
+# run above
+```
