@@ -5,9 +5,9 @@ Auteur du projet: Germain Faity - ENS Rennes 2024 (germain.faity@ens-rennes.fr).
 ## Objectif
 
 L'objectif principal de ce projet est d'analyser des données actimétriques issues d'un accéléromètre Actigraph porté à la hanche dans deux conditions:
-    - une première fois durant plusieurs jours (environ une semaine) pendant la vie quotidienne (TP1).
-    - une seconde fois pendant plusieurs activités standardisées (marche, course, vélo...) avec les dates de début et de fin consignées pour chaque activités (TP2).
-
+- une première fois durant plusieurs jours (environ une semaine) pendant la vie quotidienne (TP1).  
+- une seconde fois pendant plusieurs activités standardisées (marche, course, vélo...) avec les dates de début et de fin consignées pour chaque activités (TP2).  
+  
 Une fois ces données récoltées et analysées, le but est d'en extraire des caractéristiques (features) pour chaque activités afin de pouvoir entraîner un modèle de machine learning sur les données standardisées dans le but de faire de la reconnaissance d'activités sur les données de la vie quotidienne.
 
 ## Organisation
